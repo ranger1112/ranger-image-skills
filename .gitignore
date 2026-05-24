@@ -1,0 +1,24 @@
+# Secrets
+.env
+.env.*
+*.key
+*.pem
+
+# Outputs and scratch files
+output/
+tmp/
+*.png
+*.jpg
+*.jpeg
+*.webp
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

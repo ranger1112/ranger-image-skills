@@ -1,0 +1,11 @@
+{
+  "$schema": "https://skills.sh/schemas/skills.sh.schema.json",
+  "notGrouped": "bottom",
+  "groupings": [
+    {
+      "title": "Image Generation",
+      "description": "Skills for Ranger/OpenAI-compatible image generation.",
+      "skills": ["ranger-image-2"]
+    }
+  ]
+}

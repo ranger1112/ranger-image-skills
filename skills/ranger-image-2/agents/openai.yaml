@@ -1,0 +1,3 @@
+display_name: Ranger Image 2
+short_description: Ranger GPT Image 2 API workflow
+default_prompt: Generate an image with ranger-image-2 using the configured API endpoint and key.
