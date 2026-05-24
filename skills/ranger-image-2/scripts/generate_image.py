@@ -70,7 +70,10 @@ def prompt_yes_no(question: str, *, default: bool = True) -> bool:
     if not sys.stdin.isatty():
         return False
     suffix = "[Y/n]" if default else "[y/N]"
-    answer = input(f"{question} {suffix} ").strip().lower()
+    try:
+        answer = input(f"{question} {suffix} ").strip().lower()
+    except EOFError:
+        return False
     if not answer:
         return default
     return answer in {"y", "yes"}
@@ -82,10 +85,11 @@ def config_is_complete(values: dict[str, str]) -> bool:
 
 def prompt_for_config(existing: dict[str, str], *, persist_complete_noninteractive: bool = False) -> dict[str, str]:
     values = dict(existing)
+    if persist_complete_noninteractive and config_is_complete(values):
+        write_config(values)
+        return values
+
     if not sys.stdin.isatty():
-        if persist_complete_noninteractive and config_is_complete(values):
-            write_config(values)
-            return values
         die(
             "Missing OPENAI_API_KEY or endpoint, and interactive input is unavailable. "
             "Run with --configure in an interactive terminal, set environment variables before --configure, "
