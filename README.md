@@ -53,6 +53,6 @@ python skills/ranger-image-2/scripts/generate_image.py \
 
 - The script reads API keys from environment variables or the user-local Codex config file.
 - The script does not print API keys.
-- The script persists API keys only after interactive confirmation, under `~/.codex/ranger-image-2/config.json`.
+- The script persists API keys only when `--configure` is run, under `~/.codex/ranger-image-2/config.json`.
 - Generated images should be treated as local outputs and are ignored by git.
 
