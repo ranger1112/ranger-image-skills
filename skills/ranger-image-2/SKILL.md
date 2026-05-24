@@ -9,11 +9,28 @@ Use this skill to generate raster images through an OpenAI-compatible Image API 
 
 ## Rules
 
-- Read credentials from environment only; never echo, persist, or commit API keys.
+- Resolve credentials in this order: environment variables first, then `~/.codex/ranger-image-2/config.json`, then interactive `--configure` prompts when a terminal is available.
+- Never echo, commit, or write API keys anywhere except the user-local Codex config file after explicit confirmation.
 - Prefer `scripts/generate_image.py` instead of hand-writing one-off API callers.
 - Use the API route for speed when the user rejects the Codex CLI `--enable image_generation` session-extraction skill as too slow.
 - If `CUSTOM_IMAGE_URL` is set to a path such as `https://host/api/image/generate`, normalize the same origin to `https://host/v1` and call `/v1/images/generations`; this workspace observed `/api/image/generate` returning 404 while `/v1` routes worked.
 - Keep the user's prompt verbatim unless they ask for prompt polishing.
+
+## One-time configuration
+
+If `OPENAI_API_KEY` plus `OPENAI_BASE_URL` or `CUSTOM_IMAGE_URL` are missing, run:
+
+```powershell
+python skills/ranger-image-2/scripts/generate_image.py --configure
+```
+
+The script asks for missing values, hides API-key input, and can persist them to:
+
+```text
+~/.codex/ranger-image-2/config.json
+```
+
+Environment variables always override this local config. Do not commit the config file.
 
 ## Quick start
 
@@ -30,14 +47,8 @@ Set credentials and endpoint values in the shell environment before running. If 
 
 ## Workflow
 
-1. Confirm `OPENAI_API_KEY` exists without printing it:
-   ```powershell
-   [bool]$env:OPENAI_API_KEY
-   ```
-2. Confirm one endpoint source exists:
-   ```powershell
-   [bool]$env:OPENAI_BASE_URL; [bool]$env:CUSTOM_IMAGE_URL
-   ```
+1. Run `scripts/generate_image.py --dry-run` for a cheap configuration check.
+2. If credentials or endpoint are missing and an interactive terminal is available, run `scripts/generate_image.py --configure` and let the user provide values; persist only after confirmation.
 3. Save long prompts to a temporary prompt file to avoid shell quoting issues.
 4. Run `scripts/generate_image.py` with `--prompt-file` or `--prompt`, choosing a workspace output path under `output/imagegen/` unless the user specified another path.
 5. Validate the saved file: existence, non-zero byte size, and dimensions.
@@ -66,5 +77,6 @@ try {
 
 - `404 page not found` on `/api/image/generate`: use the same host's `/v1/images/generations` route by deriving `OPENAI_BASE_URL=https://host/v1`.
 - TLS errors from `urllib`: use the bundled script/OpenAI SDK path instead of raw `urllib`.
+- Missing credentials in a non-interactive run: set environment variables or run `python skills/ranger-image-2/scripts/generate_image.py --configure` in a terminal.
 - `openai SDK is not installed`: run `python -m pip install openai` in the active environment.
 - Existing output path: pass `--force` or choose a new filename.
