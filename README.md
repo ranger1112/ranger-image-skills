@@ -1,5 +1,7 @@
 # Ranger Image Skills
 
+English | [简体中文](README.zh-CN.md)
+
 Reusable Codex/agent skills for Ranger-compatible image generation workflows.
 
 ## Skills
@@ -46,3 +48,4 @@ python skills/ranger-image-2/scripts/generate_image.py \
 - The script reads API keys only from environment variables.
 - The script does not print or persist API keys.
 - Generated images should be treated as local outputs and are ignored by git.
+
