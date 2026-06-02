@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import base64
 import getpass
+import inspect
 import json
 import os
 from pathlib import Path
@@ -20,6 +21,8 @@ import stat
 import sys
 import time
 from typing import Any, Optional, Tuple
+import urllib.error
+import urllib.request
 from urllib.parse import urlparse, urlunparse
 
 CONFIG_DIR = Path.home() / ".codex" / "ranger-image-2"
@@ -195,7 +198,7 @@ def item_get(item: Any, key: str) -> Any:
     return getattr(item, key, None)
 
 
-def extract_image_bytes(result: Any) -> bytes:
+def decode_image_payload(result: Any) -> bytes:
     data = item_get(result, "data")
     if not data:
         die("Image API response did not include data[].")
@@ -212,6 +215,105 @@ def extract_image_bytes(result: Any) -> bytes:
     return base64.b64decode(b64)
 
 
+def extract_image_bytes(result: Any) -> bytes:
+    return decode_image_payload(result)
+
+
+def images_endpoint(base_url: str) -> str:
+    return f"{base_url.rstrip('/')}/images/generations"
+
+
+def generate_image_raw_http(
+    *,
+    key: str,
+    base_url: str,
+    model: str,
+    prompt: str,
+    size: str,
+    quality: str,
+    output_format: str,
+    timeout: int,
+) -> bytes:
+    body = {
+        "model": model,
+        "prompt": prompt,
+        "size": size,
+        "quality": quality,
+        "output_format": output_format,
+    }
+    request = urllib.request.Request(
+        images_endpoint(base_url),
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = response.read()
+    except urllib.error.HTTPError as exc:
+        detail = exc.read(4000).decode("utf-8", errors="replace")
+        die(f"Image API returned HTTP {exc.code}: {detail}")
+    except Exception as exc:
+        die(f"Image API request failed: {exc}")
+
+    try:
+        result = json.loads(payload.decode("utf-8"))
+    except Exception:
+        # Some OpenAI-compatible image providers return the image bytes directly.
+        return payload
+
+    data = item_get(result, "data")
+    first = data[0] if data else {}
+    url = item_get(first, "url")
+    b64 = item_get(first, "b64_json") or item_get(first, "base64")
+    if b64:
+        return decode_image_payload(result)
+    if url:
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as response:
+                return response.read()
+        except Exception as exc:
+            die(f"Image API returned a URL, but downloading it failed: {exc}")
+    die("Image API response did not include data[0].b64_json, data[0].base64, or data[0].url.")
+
+
+def generate_image_with_sdk(
+    *,
+    key: str,
+    base_url: str,
+    model: str,
+    prompt: str,
+    size: str,
+    quality: str,
+    output_format: str,
+    timeout: int,
+) -> Optional[bytes]:
+    try:
+        from openai import OpenAI
+    except ImportError:
+        warn("openai SDK is not installed; falling back to raw HTTP.")
+        return None
+
+    client = OpenAI(api_key=key, base_url=base_url, timeout=timeout)
+    generate_sig = inspect.signature(client.images.generate)
+    if "output_format" not in generate_sig.parameters:
+        warn("openai SDK images.generate does not expose output_format; falling back to raw HTTP.")
+        return None
+
+    result = client.images.generate(
+        model=model,
+        prompt=prompt,
+        size=size,
+        quality=quality,
+        output_format=output_format,
+    )
+    return extract_image_bytes(result)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate images with gpt-image-2 through an OpenAI-compatible Image API")
     parser.add_argument("--prompt")
@@ -225,6 +327,7 @@ def main() -> int:
     parser.add_argument("--configure", action="store_true", help="Prompt for missing API settings and save them under ~/.codex/ranger-image-2/config.json")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--timeout", type=int, default=360, help="Image API request timeout in seconds")
     args = parser.parse_args()
 
     prompt = read_prompt(args)
@@ -253,23 +356,30 @@ def main() -> int:
         print(json.dumps(request_preview, ensure_ascii=False, indent=2))
         return 0
 
-    try:
-        from openai import OpenAI
-    except ImportError:
-        die("openai SDK is not installed. Install with: python -m pip install openai")
-
     print(json.dumps(request_preview, ensure_ascii=False), file=sys.stderr)
     print("Calling Image API. This can take a couple of minutes.", file=sys.stderr)
     started = time.time()
-    client = OpenAI(api_key=key, base_url=base_url)
-    result = client.images.generate(
+    image = generate_image_with_sdk(
+        key=key,
+        base_url=base_url,
         model=args.model,
         prompt=prompt,
         size=args.size,
         quality=args.quality,
         output_format=args.output_format,
+        timeout=args.timeout,
     )
-    image = extract_image_bytes(result)
+    if image is None:
+        image = generate_image_raw_http(
+            key=key,
+            base_url=base_url,
+            model=args.model,
+            prompt=prompt,
+            size=args.size,
+            quality=args.quality,
+            output_format=args.output_format,
+            timeout=args.timeout,
+        )
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes(image)
     print(f"Wrote {out}")

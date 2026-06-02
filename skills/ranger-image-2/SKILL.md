@@ -40,6 +40,7 @@ python skills/ranger-image-2/scripts/generate_image.py `
   --out output/imagegen/sunset.png `
   --size 1536x1024 `
   --quality high `
+  --timeout 360 `
   --force
 ```
 
@@ -76,7 +77,9 @@ try {
 ## Troubleshooting
 
 - `404 page not found` on `/api/image/generate`: use the same host's `/v1/images/generations` route by deriving `OPENAI_BASE_URL=https://host/v1`.
-- TLS errors from `urllib`: use the bundled script/OpenAI SDK path instead of raw `urllib`.
+- Older OpenAI SDK versions that do not expose `output_format`: the bundled script automatically falls back to raw `/v1/images/generations`.
+- Slow image jobs: increase `--timeout`; the default is 360 seconds.
+- TLS errors from raw HTTP fallback: install or upgrade the OpenAI SDK so the script can use the SDK path when it supports the requested image parameters.
 - Missing credentials in a non-interactive run: set environment variables or run `python skills/ranger-image-2/scripts/generate_image.py --configure` in a terminal.
-- `openai SDK is not installed`: run `python -m pip install openai` in the active environment.
+- `openai SDK is not installed`: the script falls back to raw HTTP; if your provider requires SDK-specific transport behavior, run `python -m pip install openai` in the active environment.
 - Existing output path: pass `--force` or choose a new filename.
