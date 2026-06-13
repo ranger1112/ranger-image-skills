@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate an image with gpt-image-2 through an OpenAI-compatible Image API.
+"""Generate or edit images with gpt-image-2 through an OpenAI-compatible Image API.
 
 Credential resolution order:
 1. Environment variables (OPENAI_API_KEY, OPENAI_BASE_URL/CUSTOM_IMAGE_URL)
@@ -198,52 +198,190 @@ def item_get(item: Any, key: str) -> Any:
     return getattr(item, key, None)
 
 
-def decode_image_payload(result: Any) -> bytes:
+def to_jsonable(value: Any) -> Any:
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    if hasattr(value, "to_dict"):
+        return value.to_dict()
+    if isinstance(value, dict):
+        return {str(k): to_jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [to_jsonable(v) for v in value]
+    return value
+
+
+def save_response_json(result: Any, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(to_jsonable(result), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(f"Wrote response JSON {path}")
+
+
+def strip_data_url_prefix(value: str) -> str:
+    if value.lstrip().startswith("data:") and "," in value:
+        return value.split(",", 1)[1]
+    return value
+
+
+def extract_image_entries(result: Any) -> list[dict[str, Any]]:
     data = item_get(result, "data")
     if not data:
         die("Image API response did not include data[].")
-    first = data[0]
-    b64 = item_get(first, "b64_json") or item_get(first, "base64")
-    if not b64:
-        # Keep this intentionally narrow; URL outputs vary and often need auth/download policy.
-        url = item_get(first, "url")
-        if url:
-            die("Image API returned a URL instead of base64. Re-run with a provider that returns b64_json, or extend this script for URL downloads.")
-        die("Image API response did not include data[0].b64_json.")
-    if isinstance(b64, str) and b64.lstrip().startswith("data:") and "," in b64:
-        b64 = b64.split(",", 1)[1]
-    return base64.b64decode(b64)
+    entries: list[dict[str, Any]] = []
+    for index, item in enumerate(data):
+        b64 = item_get(item, "b64_json") or item_get(item, "base64")
+        url = item_get(item, "url")
+        if isinstance(b64, str) and b64.strip():
+            entries.append({"index": index, "kind": "base64", "value": strip_data_url_prefix(b64)})
+            continue
+        if isinstance(url, str) and url.strip():
+            if url.lstrip().startswith("data:") and "," in url:
+                entries.append({"index": index, "kind": "base64", "value": strip_data_url_prefix(url)})
+            else:
+                entries.append({"index": index, "kind": "url", "value": url.strip()})
+            continue
+        die(f"Image API response did not include data[{index}].b64_json or data[{index}].url.")
+    return entries
 
 
-def extract_image_bytes(result: Any) -> bytes:
-    return decode_image_payload(result)
+def download_image_url(url: str, *, max_bytes: int, timeout: int) -> bytes:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        die(f"Image URL is not a valid http(s) URL: {url}")
+
+    request = urllib.request.Request(url, headers={"Accept": "image/png,image/jpeg,image/webp,*/*"})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        content_type = response.headers.get("content-type", "")
+        if content_type and not content_type.lower().startswith("image/"):
+            warn(f"Downloaded URL content-type is not image/*: {content_type}")
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = response.read(1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_bytes:
+                die(f"Downloaded image exceeds --max-download-bytes ({max_bytes}).")
+            chunks.append(chunk)
+    return b"".join(chunks)
 
 
-def images_endpoint(base_url: str) -> str:
-    return f"{base_url.rstrip('/')}/images/generations"
+def output_path_for_index(base: Path, index: int, total: int) -> Path:
+    if total <= 1 or index == 0:
+        return base
+    suffix = base.suffix or ".png"
+    return base.with_name(f"{base.stem}-{index + 1}{suffix}")
 
 
-def generate_image_raw_http(
+def response_json_path_for_out(out: Path) -> Path:
+    return out.with_suffix(out.suffix + ".response.json" if out.suffix else ".response.json")
+
+
+def resolve_response_json_path(value: Optional[str], out: Path) -> Optional[Path]:
+    if value is None:
+        return None
+    if value == "auto":
+        return response_json_path_for_out(out)
+    return Path(value)
+
+
+def ensure_can_write(paths: list[Path], *, force: bool) -> None:
+    if force:
+        return
+    seen: set[Path] = set()
+    for path in paths:
+        normalized = path.resolve() if path.exists() else path.absolute()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        if path.exists():
+            die(f"Output already exists: {path} (use --force to overwrite)")
+
+
+def endpoint_url(base_url: str, path: str) -> str:
+    return f"{base_url.rstrip('/')}/{path.lstrip('/')}"
+
+
+def validate_local_files(paths: list[str], *, label: str) -> None:
+    for raw in paths:
+        path = Path(raw)
+        if not path.exists():
+            die(f"{label} does not exist: {path}")
+        if not path.is_file():
+            die(f"{label} is not a file: {path}")
+
+
+def validate_http_urls(urls: list[str], *, label: str) -> None:
+    for raw in urls:
+        parsed = urlparse(raw)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            die(f"{label} must be an absolute http(s) URL: {raw}")
+
+
+def validate_edit_args(args: argparse.Namespace) -> None:
+    image_paths = args.image or []
+    image_urls = args.image_url or []
+    if not args.edit:
+        if image_paths or image_urls or args.mask or args.mask_url:
+            die("Use --edit when passing --image, --image-url, --mask, or --mask-url.")
+        return
+
+    if not image_paths and not image_urls:
+        die("--edit requires at least one --image or --image-url.")
+    if image_paths and image_urls:
+        die("Do not mix local --image files with remote --image-url in one edit request.")
+    if args.mask and args.mask_url:
+        die("Use --mask or --mask-url, not both.")
+    if image_paths and args.mask_url:
+        die("--mask-url is only supported with --image-url JSON edit requests; use --mask with local --image files.")
+    if image_urls and args.mask:
+        die("--mask is only supported with local --image files; use --mask-url with --image-url requests.")
+
+    validate_local_files(image_paths, label="Image")
+    if args.mask:
+        validate_local_files([args.mask], label="Mask")
+    validate_http_urls(image_urls, label="Image URL")
+    if args.mask_url:
+        validate_http_urls([args.mask_url], label="Mask URL")
+
+
+def build_common_image_request_args(args: argparse.Namespace, prompt: str) -> dict[str, Any]:
+    request_args: dict[str, Any] = {
+        "model": args.model,
+        "prompt": prompt,
+        "size": args.size,
+        "quality": args.quality,
+        "output_format": args.output_format,
+    }
+    if args.n != 1:
+        request_args["n"] = args.n
+    if args.response_format:
+        request_args["response_format"] = args.response_format
+    return request_args
+
+
+def can_call_sdk_method(method: Any, request_args: dict[str, Any]) -> bool:
+    try:
+        sig = inspect.signature(method)
+    except Exception:
+        return True
+    unsupported = [key for key in request_args if key not in sig.parameters]
+    if unsupported:
+        warn(f"openai SDK method does not expose {', '.join(unsupported)}; falling back to raw HTTP.")
+        return False
+    return True
+
+
+def post_json(
     *,
     key: str,
-    base_url: str,
-    model: str,
-    prompt: str,
-    size: str,
-    quality: str,
-    output_format: str,
+    url: str,
+    payload: dict[str, Any],
     timeout: int,
-) -> bytes:
-    body = {
-        "model": model,
-        "prompt": prompt,
-        "size": size,
-        "quality": quality,
-        "output_format": output_format,
-    }
+) -> Any:
     request = urllib.request.Request(
-        images_endpoint(base_url),
-        data=json.dumps(body).encode("utf-8"),
+        url,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
         headers={
             "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
@@ -253,69 +391,100 @@ def generate_image_raw_http(
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            payload = response.read()
+            response_body = response.read()
     except urllib.error.HTTPError as exc:
-        detail = exc.read(4000).decode("utf-8", errors="replace")
-        die(f"Image API returned HTTP {exc.code}: {detail}")
-    except Exception as exc:
-        die(f"Image API request failed: {exc}")
+        error_body = exc.read(4096).decode("utf-8", errors="replace")
+        die(f"Image API returned HTTP {exc.code}: {error_body}")
+    except urllib.error.URLError as exc:
+        die(f"Image API request failed: {exc.reason}")
 
     try:
-        result = json.loads(payload.decode("utf-8"))
-    except Exception:
+        return json.loads(response_body.decode("utf-8"))
+    except json.JSONDecodeError:
         # Some OpenAI-compatible image providers return the image bytes directly.
-        return payload
-
-    data = item_get(result, "data")
-    first = data[0] if data else {}
-    url = item_get(first, "url")
-    b64 = item_get(first, "b64_json") or item_get(first, "base64")
-    if b64:
-        return decode_image_payload(result)
-    if url:
-        try:
-            with urllib.request.urlopen(url, timeout=timeout) as response:
-                return response.read()
-        except Exception as exc:
-            die(f"Image API returned a URL, but downloading it failed: {exc}")
-    die("Image API response did not include data[0].b64_json, data[0].base64, or data[0].url.")
+        return {"data": [{"base64": base64.b64encode(response_body).decode("ascii")}]} 
 
 
-def generate_image_with_sdk(
+def call_image_generation(
     *,
     key: str,
     base_url: str,
-    model: str,
+    args: argparse.Namespace,
     prompt: str,
-    size: str,
-    quality: str,
-    output_format: str,
-    timeout: int,
-) -> Optional[bytes]:
+) -> Any:
+    request_args = build_common_image_request_args(args, prompt)
     try:
         from openai import OpenAI
     except ImportError:
         warn("openai SDK is not installed; falling back to raw HTTP.")
-        return None
+    else:
+        client = OpenAI(api_key=key, base_url=base_url, timeout=args.timeout)
+        if can_call_sdk_method(client.images.generate, request_args):
+            return client.images.generate(**request_args)
 
-    client = OpenAI(api_key=key, base_url=base_url, timeout=timeout)
-    generate_sig = inspect.signature(client.images.generate)
-    if "output_format" not in generate_sig.parameters:
-        warn("openai SDK images.generate does not expose output_format; falling back to raw HTTP.")
-        return None
-
-    result = client.images.generate(
-        model=model,
-        prompt=prompt,
-        size=size,
-        quality=quality,
-        output_format=output_format,
+    return post_json(
+        key=key,
+        url=endpoint_url(base_url, "/images/generations"),
+        payload=request_args,
+        timeout=args.timeout,
     )
-    return extract_image_bytes(result)
+
+
+def call_image_edit_with_urls(
+    *,
+    key: str,
+    base_url: str,
+    args: argparse.Namespace,
+    prompt: str,
+) -> Any:
+    image_urls = args.image_url or []
+    payload = build_common_image_request_args(args, prompt)
+    if len(image_urls) == 1:
+        payload["image_url"] = image_urls[0]
+    else:
+        payload["image_urls"] = image_urls
+    if args.mask_url:
+        payload["mask_url"] = args.mask_url
+    return post_json(
+        key=key,
+        url=endpoint_url(base_url, "/images/edits"),
+        payload=payload,
+        timeout=args.timeout,
+    )
+
+
+def call_image_edit_with_local_files(
+    *,
+    key: str,
+    base_url: str,
+    args: argparse.Namespace,
+    prompt: str,
+) -> Any:
+    try:
+        from openai import OpenAI
+    except ImportError:
+        die("openai SDK is required for local file edits. Install with: python -m pip install openai")
+
+    client = OpenAI(api_key=key, base_url=base_url, timeout=args.timeout)
+    image_handles = []
+    mask_handle = None
+    try:
+        image_handles = [open(path, "rb") for path in (args.image or [])]
+        mask_handle = open(args.mask, "rb") if args.mask else None
+        request_args = build_common_image_request_args(args, prompt)
+        request_args["image"] = image_handles[0] if len(image_handles) == 1 else image_handles
+        if mask_handle:
+            request_args["mask"] = mask_handle
+        return client.images.edit(**request_args)
+    finally:
+        for handle in image_handles:
+            handle.close()
+        if mask_handle:
+            mask_handle.close()
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Generate images with gpt-image-2 through an OpenAI-compatible Image API")
+    parser = argparse.ArgumentParser(description="Generate or edit images with gpt-image-2 through an OpenAI-compatible Image API")
     parser.add_argument("--prompt")
     parser.add_argument("--prompt-file")
     parser.add_argument("--out", default="output/imagegen/output.png")
@@ -323,12 +492,29 @@ def main() -> int:
     parser.add_argument("--size", default="1536x1024")
     parser.add_argument("--quality", default="high")
     parser.add_argument("--output-format", default="png")
+    parser.add_argument("--response-format", choices=["b64_json", "url"], help="Ask the provider for b64_json or url responses when supported")
+    parser.add_argument("--n", type=int, default=1, help="Number of images to request; saves additional files as name-2.ext, name-3.ext, ...")
+    parser.add_argument("--save-response-json", nargs="?", const="auto", help="Save the raw Image API response JSON. Omit value to save next to --out")
+    parser.add_argument("--max-download-bytes", type=int, default=50 * 1024 * 1024, help="Maximum bytes to download when the API returns image URLs")
+    parser.add_argument("--edit", action="store_true", help="Call /v1/images/edits instead of /v1/images/generations")
+    parser.add_argument("--image", action="append", help="Local source image for --edit. Repeat for multiple images when the provider supports it")
+    parser.add_argument("--image-url", action="append", help="Remote source image URL for --edit provider extensions. Repeat for multiple URLs")
+    parser.add_argument("--mask", help="Local PNG mask for --edit with local --image files")
+    parser.add_argument("--mask-url", help="Remote PNG mask URL for --edit with --image-url")
     parser.add_argument("--base-url", help="Override OPENAI_BASE_URL/CUSTOM_IMAGE_URL derivation")
     parser.add_argument("--configure", action="store_true", help="Prompt for missing API settings and save them under ~/.codex/ranger-image-2/config.json")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--timeout", type=int, default=360, help="Image API request timeout in seconds")
     args = parser.parse_args()
+
+    if args.n < 1:
+        die("--n must be >= 1")
+    if args.max_download_bytes < 1:
+        die("--max-download-bytes must be >= 1")
+    if args.timeout < 1:
+        die("--timeout must be >= 1")
+    validate_edit_args(args)
 
     prompt = read_prompt(args)
     key, _custom_image_url, _explicit_base_url, base_url, config_source = resolve_settings(args)
@@ -338,17 +524,29 @@ def main() -> int:
         return 0
 
     out = Path(args.out)
-    if out.exists() and not args.force:
-        die(f"Output already exists: {out} (use --force to overwrite)")
+    response_json_path = resolve_response_json_path(args.save_response_json, out)
+    expected_paths = [output_path_for_index(out, index, args.n) for index in range(args.n)]
+    if response_json_path:
+        expected_paths.append(response_json_path)
+    ensure_can_write(expected_paths, force=args.force)
 
     request_preview = {
         "base_url": base_url,
-        "endpoint": "/v1/images/generations",
+        "endpoint": "/v1/images/edits" if args.edit else "/v1/images/generations",
+        "mode": "edit" if args.edit else "generate",
         "model": args.model,
+        "n": args.n,
         "size": args.size,
         "quality": args.quality,
         "output_format": args.output_format,
+        "response_format": args.response_format or "(provider default)",
         "out": str(out),
+        "save_response_json": str(response_json_path) if response_json_path else None,
+        "max_download_bytes": args.max_download_bytes,
+        "timeout": args.timeout,
+        "image_count": len(args.image or []),
+        "image_url_count": len(args.image_url or []),
+        "has_mask": bool(args.mask or args.mask_url),
         "has_api_key": bool(key),
         "config_source": config_source,
     }
@@ -359,30 +557,32 @@ def main() -> int:
     print(json.dumps(request_preview, ensure_ascii=False), file=sys.stderr)
     print("Calling Image API. This can take a couple of minutes.", file=sys.stderr)
     started = time.time()
-    image = generate_image_with_sdk(
-        key=key,
-        base_url=base_url,
-        model=args.model,
-        prompt=prompt,
-        size=args.size,
-        quality=args.quality,
-        output_format=args.output_format,
-        timeout=args.timeout,
-    )
-    if image is None:
-        image = generate_image_raw_http(
-            key=key,
-            base_url=base_url,
-            model=args.model,
-            prompt=prompt,
-            size=args.size,
-            quality=args.quality,
-            output_format=args.output_format,
-            timeout=args.timeout,
-        )
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_bytes(image)
-    print(f"Wrote {out}")
+    if args.edit:
+        if args.image_url:
+            result = call_image_edit_with_urls(key=key, base_url=base_url, args=args, prompt=prompt)
+        else:
+            result = call_image_edit_with_local_files(key=key, base_url=base_url, args=args, prompt=prompt)
+    else:
+        result = call_image_generation(key=key, base_url=base_url, args=args, prompt=prompt)
+
+    entries = extract_image_entries(result)
+    actual_paths = [output_path_for_index(out, index, len(entries)) for index in range(len(entries))]
+    final_paths = [*actual_paths, *([response_json_path] if response_json_path else [])]
+    ensure_can_write(final_paths, force=args.force)
+
+    if response_json_path:
+        save_response_json(result, response_json_path)
+
+    for index, entry in enumerate(entries):
+        image_out = actual_paths[index]
+        if entry["kind"] == "base64":
+            image = base64.b64decode(entry["value"])
+        else:
+            print(f"Downloading image URL for item {index + 1}/{len(entries)}.", file=sys.stderr)
+            image = download_image_url(entry["value"], max_bytes=args.max_download_bytes, timeout=args.timeout)
+        image_out.parent.mkdir(parents=True, exist_ok=True)
+        image_out.write_bytes(image)
+        print(f"Wrote {image_out}")
     print(f"Generation completed in {time.time() - started:.1f}s.", file=sys.stderr)
     return 0
 

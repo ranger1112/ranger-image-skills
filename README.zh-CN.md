@@ -52,6 +52,43 @@ python skills/ranger-image-2/scripts/generate_image.py \
   --force
 ```
 
+批量输出和响应调试：
+
+```bash
+python skills/ranger-image-2/scripts/generate_image.py \
+  --prompt "Three cute robot mascot sticker variations, no text." \
+  --out output/imagegen/robot.png \
+  --n 3 \
+  --response-format b64_json \
+  --save-response-json \
+  --force
+```
+
+如果返回多张图片，第一张写入 `--out`，后续自动写成 `name-2.ext`、`name-3.ext`。如果上游支持 URL 响应，可以使用 `--response-format url`；脚本会下载 URL 输出，并受 `--max-download-bytes` 限制。
+
+本地文件图像编辑：
+
+```bash
+python skills/ranger-image-2/scripts/generate_image.py \
+  --edit \
+  --image input/source.png \
+  --prompt "Replace the background with a neon cyberpunk street, keep the main subject." \
+  --out output/imagegen/edit.png \
+  --force
+```
+
+使用支持远程图片 URL 的 provider 扩展做图像编辑：
+
+```bash
+python skills/ranger-image-2/scripts/generate_image.py \
+  --edit \
+  --image-url "https://example.com/source.png" \
+  --prompt "Turn this into a watercolor illustration." \
+  --out output/imagegen/edit-url.png \
+  --response-format b64_json \
+  --force
+```
+
 长 prompt 建议放到文件里，避免 shell 引号转义问题：
 
 ```bash
@@ -67,6 +104,10 @@ python skills/ranger-image-2/scripts/generate_image.py \
 - 默认尺寸：`1536x1024`。
 - 默认质量：`high`。
 - 默认输出格式：`png`。
+- 支持 `--n` 批量请求，并自动拆分保存多张图片。
+- 支持 `--response-format b64_json|url`；URL 输出会下载为本地文件。
+- 支持 `--save-response-json` 保存原始 Image API 响应，便于排查 provider 差异。
+- 支持 `--edit` 图像编辑：本地文件用 `--image` / `--mask`，远程 URL provider 扩展用 `--image-url` / `--mask-url`。同一次编辑请求不要混用本地文件和远程 URL。
 - 脚本从环境变量或用户本地 Codex 配置文件读取 API key。
 - 脚本不会打印 API key。
 - 脚本只会在交互确认后把 API key 保存到 `~/.codex/ranger-image-2/config.json`。
