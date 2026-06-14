@@ -223,6 +223,9 @@ def strip_data_url_prefix(value: str) -> str:
 
 
 def extract_image_entries(result: Any) -> list[dict[str, Any]]:
+    if isinstance(result, (bytes, bytearray)):
+        return [{"index": 0, "kind": "base64", "value": base64.b64encode(bytes(result)).decode("ascii")}]
+
     data = item_get(result, "data")
     if not data:
         die("Image API response did not include data[].")
@@ -400,9 +403,9 @@ def post_json(
 
     try:
         return json.loads(response_body.decode("utf-8"))
-    except json.JSONDecodeError:
+    except (UnicodeDecodeError, json.JSONDecodeError):
         # Some OpenAI-compatible image providers return the image bytes directly.
-        return {"data": [{"base64": base64.b64encode(response_body).decode("ascii")}]} 
+        return {"data": [{"base64": base64.b64encode(response_body).decode("ascii")}]}
 
 
 def call_image_generation(
