@@ -13,7 +13,7 @@ Reusable Codex/agent skills for Ranger-compatible image generation workflows.
 From GitHub after this repository is published:
 
 ```bash
-npx skills add QLHazyCoder/ranger-image-skills --skill ranger-image-2
+npx skills add ranger1112/ranger-image-skills --skill ranger-image-2
 ```
 
 Or from a local checkout:
