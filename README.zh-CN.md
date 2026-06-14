@@ -47,10 +47,12 @@ python skills/ranger-image-2/scripts/generate_image.py --configure
 python skills/ranger-image-2/scripts/generate_image.py \
   --prompt "A golden sunset afterglow over calm water, painterly style, no text." \
   --out output/imagegen/sunset.png \
-  --size 1536x1024 \
+  --preset landscape \
   --quality high \
   --force
 ```
+
+内置 preset：`square`（`1024x1024`）、`landscape`（`1536x1024`）、`portrait`（`1024x1536`）、`4k-landscape`（`3840x2160`）、`4k-portrait`（`2160x3840`）。也可以继续用 `--size WIDTHxHEIGHT` 传自定义尺寸；`--preset` 与 `--size` 互斥。4K preset 会原样传给 provider，是否真正支持取决于上游模型和 endpoint。
 
 批量输出和响应调试：
 
@@ -64,7 +66,7 @@ python skills/ranger-image-2/scripts/generate_image.py \
   --force
 ```
 
-如果返回多张图片，第一张写入 `--out`，后续自动写成 `name-2.ext`、`name-3.ext`。如果上游支持 URL 响应，可以使用 `--response-format url`；脚本会下载 URL 输出，并受 `--max-download-bytes` 限制。
+如果返回多张图片，第一张写入 `--out`，后续自动写成 `name-2.ext`、`name-3.ext`。如果上游支持 URL 响应，可以使用 `--response-format url`；脚本会下载 URL 输出，并受 `--max-download-bytes` 限制。若只想保存返回的 URL、不下载图片，添加 `--no-download-url`，脚本会写入 `*.url.txt` sidecar 文件。
 
 本地文件图像编辑：
 
@@ -89,6 +91,17 @@ python skills/ranger-image-2/scripts/generate_image.py \
   --force
 ```
 
+只保留 provider 返回 URL、不下载图片：
+
+```bash
+python skills/ranger-image-2/scripts/generate_image.py \
+  --prompt "A cinematic mountain panorama, no text." \
+  --out output/imagegen/mountain.png \
+  --response-format url \
+  --no-download-url \
+  --force
+```
+
 长 prompt 建议放到文件里，避免 shell 引号转义问题：
 
 ```bash
@@ -104,8 +117,11 @@ python skills/ranger-image-2/scripts/generate_image.py \
 - 默认尺寸：`1536x1024`。
 - 默认质量：`high`。
 - 默认输出格式：`png`。
+- 支持 `--preset square|landscape|portrait|4k-landscape|4k-portrait`，4K 是否成功由 provider 能力决定。
+- 支持 `--size WIDTHxHEIGHT` 正整数尺寸校验；`--size` 与 `--preset` 不能同时使用。
 - 支持 `--n` 批量请求，并自动拆分保存多张图片。
 - 支持 `--response-format b64_json|url`；URL 输出会下载为本地文件。
+- 支持 `--no-download-url`：URL 输出不下载，改写为 `*.url.txt` sidecar 文件。
 - 支持 `--save-response-json` 保存原始 Image API 响应，便于排查 provider 差异。
 - 支持 `--edit` 图像编辑：本地文件用 `--image` / `--mask`，远程 URL provider 扩展用 `--image-url` / `--mask-url`。同一次编辑请求不要混用本地文件和远程 URL。
 - 脚本从环境变量或用户本地 Codex 配置文件读取 API key。

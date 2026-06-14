@@ -44,10 +44,12 @@ Use a provider-specific custom image URL only as an environment variable, not as
 python skills/ranger-image-2/scripts/generate_image.py \
   --prompt "A golden sunset afterglow over calm water, painterly style, no text." \
   --out output/imagegen/sunset.png \
-  --size 1536x1024 \
+  --preset landscape \
   --quality high \
   --force
 ```
+
+Available presets are `square` (`1024x1024`), `landscape` (`1536x1024`), `portrait` (`1024x1536`), `4k-landscape` (`3840x2160`), and `4k-portrait` (`2160x3840`). You can still pass a custom `--size WIDTHxHEIGHT`; `--preset` and `--size` are mutually exclusive. 4K presets are forwarded to the provider and require upstream model/endpoint support.
 
 Batch output and response debugging:
 
@@ -61,7 +63,7 @@ python skills/ranger-image-2/scripts/generate_image.py \
   --force
 ```
 
-When multiple images are returned, the first image uses `--out`; additional files are saved as `name-2.ext`, `name-3.ext`, etc. If an upstream returns image URLs, use `--response-format url`; the script downloads URL outputs with a size limit.
+When multiple images are returned, the first image uses `--out`; additional files are saved as `name-2.ext`, `name-3.ext`, etc. If an upstream returns image URLs, use `--response-format url`; the script downloads URL outputs with a size limit. Add `--no-download-url` to skip downloading returned URLs and save `*.url.txt` sidecar files instead.
 
 Image edit with a local file:
 
@@ -86,11 +88,24 @@ python skills/ranger-image-2/scripts/generate_image.py \
   --force
 ```
 
+If the provider returns a URL and you only want to preserve it:
+
+```bash
+python skills/ranger-image-2/scripts/generate_image.py \
+  --prompt "A cinematic mountain panorama, no text." \
+  --out output/imagegen/mountain.png \
+  --response-format url \
+  --no-download-url \
+  --force
+```
+
 ## Notes
 
 - The script reads API keys from environment variables or the user-local Codex config file.
 - The script does not print API keys.
 - The script persists API keys only when `--configure` is run, under `~/.codex/ranger-image-2/config.json`.
+- Use `--preset` for common sizes including 4K presets; provider support for 4K sizes may vary.
 - `--save-response-json` stores the raw Image API response next to `--out` unless you pass an explicit path.
+- `--no-download-url` stores returned image URLs as sidecar text files instead of downloading them.
 - `--edit` supports local `--image` / `--mask` files and remote `--image-url` / `--mask-url` provider extensions. Do not mix local files and remote URLs in one edit request.
 - Generated images should be treated as local outputs and are ignored by git.
